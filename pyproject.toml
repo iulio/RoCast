@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocast"
+version = "0.1.0"
+description = "Multi-scale probabilistic Solar and Wind forecasting for the Romanian SEN (10YRO-TEL------P)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["solar", "wind", "forecasting", "probabilistic", "nowcasting", "Romania", "ENTSO-E", "PVNet", "Predico"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "torch",
+    "pydantic>=2",
+    "pydantic-settings",
+    "pvlib",
+    "xarray",
+    "requests",
+    "httpx",
+    "entsoe-py",
+]
+
+[project.optional-dependencies]
+nowcast = ["pysteps", "opencv-python-headless"]
+earth2 = ["earth2studio"]
+satellite = ["satpy", "pyresample"]
+foundation = ["chronos-forecasting"]
+dev = ["pytest", "ruff", "build"]
+
+[project.scripts]
+rocast = "rocast.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rocast*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning", "ignore::UserWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = ["E402"]  # scripts bootstrap sys.path before importing rocast
+
+[tool.ruff.lint.isort]
+known-first-party = ["rocast"]

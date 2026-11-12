@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with dev + nowcast extras
+        run: python -m pip install -e ".[dev,nowcast]"
+      - name: Lint
+        run: ruff check rocast tests scripts
+      - name: Unit and integration tests
+        run: python -m pytest -v
+      - name: Smoke-test the CLI (synthetic, 1 epoch)
+        run: python -m rocast.cli backtest --mode synthetic --epochs 1 --days 8 --train-stride 12 --n-test-windows 2 --output-dir outputs_ci

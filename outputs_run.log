@@ -1,0 +1,42 @@
+INFO rocast.cli: Training solar_mw on 119 windows ...
+INFO rocast.cli: [solar_mw] epoch 1/15 pinball(norm)=0.04005
+INFO rocast.cli: [solar_mw] epoch 2/15 pinball(norm)=0.02136
+INFO rocast.cli: [solar_mw] epoch 3/15 pinball(norm)=0.01437
+INFO rocast.cli: [solar_mw] epoch 4/15 pinball(norm)=0.01208
+INFO rocast.cli: [solar_mw] epoch 5/15 pinball(norm)=0.01103
+INFO rocast.cli: [solar_mw] epoch 6/15 pinball(norm)=0.00990
+INFO rocast.cli: [solar_mw] epoch 7/15 pinball(norm)=0.00903
+INFO rocast.cli: [solar_mw] epoch 8/15 pinball(norm)=0.00834
+INFO rocast.cli: [solar_mw] epoch 9/15 pinball(norm)=0.00786
+INFO rocast.cli: [solar_mw] epoch 10/15 pinball(norm)=0.00684
+INFO rocast.cli: [solar_mw] epoch 11/15 pinball(norm)=0.00600
+INFO rocast.cli: [solar_mw] epoch 12/15 pinball(norm)=0.00548
+INFO rocast.cli: [solar_mw] epoch 13/15 pinball(norm)=0.00514
+INFO rocast.cli: [solar_mw] epoch 14/15 pinball(norm)=0.00489
+INFO rocast.cli: [solar_mw] epoch 15/15 pinball(norm)=0.00476
+INFO rocast.cli: Training wind_onshore_mw on 119 windows ...
+INFO rocast.cli: [wind_onshore_mw] epoch 1/15 pinball(norm)=0.06581
+INFO rocast.cli: [wind_onshore_mw] epoch 2/15 pinball(norm)=0.03504
+INFO rocast.cli: [wind_onshore_mw] epoch 3/15 pinball(norm)=0.02145
+INFO rocast.cli: [wind_onshore_mw] epoch 4/15 pinball(norm)=0.01602
+INFO rocast.cli: [wind_onshore_mw] epoch 5/15 pinball(norm)=0.01398
+INFO rocast.cli: [wind_onshore_mw] epoch 6/15 pinball(norm)=0.01139
+INFO rocast.cli: [wind_onshore_mw] epoch 7/15 pinball(norm)=0.00999
+INFO rocast.cli: [wind_onshore_mw] epoch 8/15 pinball(norm)=0.00934
+INFO rocast.cli: [wind_onshore_mw] epoch 9/15 pinball(norm)=0.00815
+INFO rocast.cli: [wind_onshore_mw] epoch 10/15 pinball(norm)=0.00740
+INFO rocast.cli: [wind_onshore_mw] epoch 11/15 pinball(norm)=0.00690
+INFO rocast.cli: [wind_onshore_mw] epoch 12/15 pinball(norm)=0.00647
+INFO rocast.cli: [wind_onshore_mw] epoch 13/15 pinball(norm)=0.00628
+INFO rocast.cli: [wind_onshore_mw] epoch 14/15 pinball(norm)=0.00618
+INFO rocast.cli: [wind_onshore_mw] epoch 15/15 pinball(norm)=0.00612
+INFO rocast.cli: Artifacts written to D:\Romanian-nowcast\outputs
+Pysteps configuration file found at: D:\Romanian-nowcast\.venv\Lib\site-packages\pysteps\pystepsrc
+
+RoCast backtest | zone 10YRO-TEL------P | mode=synthetic | 119 train / 3 test windows | nowcast=pysteps-LK
+----------------------------------------------------------------------------------------------------------------
+target (MW)               pinball         crps      mae_p50     rmse_p50      mae_nwp      skill_% cov_p10p90_%
+----------------------------------------------------------------------------------------------------------------
+solar_mw                    46.24        92.48       118.84       211.25        90.29       -31.62        61.63
+wind_onshore_mw            150.83       301.67       340.37       475.70       320.66        -6.15        19.97
+----------------------------------------------------------------------------------------------------------------

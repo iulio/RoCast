@@ -1,0 +1,5 @@
+include README.md
+include PLAN.md
+include LICENSE
+recursive-include assets *.png
+recursive-include assets *.geojson
