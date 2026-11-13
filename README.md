@@ -55,7 +55,7 @@ The PyTorch model combines a 3D satellite encoder, a spatial Earth-2 encoder, re
 
 `RomaniaPolygonEngine` uses Shapely and a bundled geoBoundaries outline to clip longitude/latitude rings, GeoJSON, or WKT to Romania (`ROU`). A vectorized mask selects weather-grid cells inside the clipped area. If capacity is omitted, the model scales national installed capacity from ENTSO-E A68 by the intersected area and falls back to configured capacity if ENTSO-E is unavailable. The polygon CLI currently uses clear-sky solar physics and synthetic cloud and wind inputs.
 
-## Install and run
+## Installation & Quickstart
 
 ```bash
 git clone https://github.com/iulio/Ro-cast.git
@@ -63,9 +63,43 @@ cd Ro-cast
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
+cp .env.example .env
 ```
 
-On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.ps1`. The offline examples require no credentials. For live ingestion, set `ROCAST_ENTSOE_API_KEY` in your environment or in a local `.env`. Install `.[nowcast]` for pySTEPS, `.[satellite]` for native SEVIRI ingestion, and `.[earth2]` for Earth2Studio. Supply local SEVIRI files with `--seviri-dir` and select FourCastNet 3 with `--earth2 earth2studio`.
+On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1` and use `Copy-Item .env.example .env`. Copy the example on first setup and keep your existing `.env` on later runs. Install `.[nowcast]` for pySTEPS, `.[satellite]` for native SEVIRI ingestion, and `.[earth2]` for Earth2Studio.
+
+## Data Sources & API Credentials
+
+| Source | Credential | When required |
+| :--- | :--- | :--- |
+| Open-Meteo | None for the public endpoints RoCast uses | The live backtest and an uncached ERA5 download require internet access. |
+| ENTSO-E Transparency Platform | `ROCAST_ENTSOE_API_KEY` | Required for the live backtest. Optional for polygon capacity lookup and hero generation when a cached ENTSO-E CSV is available or an ERA5-derived benchmark is sufficient. |
+| EUMETSAT Data Store | `ROCAST_EUMETSAT_KEY` and `ROCAST_EUMETSAT_SECRET` | Required for authenticated downloads with EUMDAC. RoCast accepts local scans through `--seviri-dir`. |
+| NVIDIA NGC / Earth-2 NIM | `NGC_API_KEY` for NVIDIA tools, `ROCAST_NGC_API_KEY` for the RoCast NIM client | Optional. Used when provisioning Earth-2 NIM or calling an authenticated NIM endpoint. The `--earth2 earth2studio` CLI option selects the separate FourCastNet 3 backend. |
+
+### ENTSO-E Transparency Platform
+
+1. Register on the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) and verify your account email.
+2. Email `transparency@entsoe.eu` with the subject `RESTful API access` and include your registered email address in the message.
+3. After approval, sign in, open **My Account**, generate a security token, and save it as `ROCAST_ENTSOE_API_KEY` in your local `.env`. [ENTSO-E token instructions](https://transparencyplatform.zendesk.com/hc/en-us/articles/12845911031188-How-to-get-security-token)
+
+### EUMETSAT Data Store
+
+1. Register or sign in with your EUMETSAT EO Portal account.
+2. Open the **API Key Management** page from your user profile and generate or retrieve your **Consumer Key** and **Consumer Secret**. [EUMETSAT API Key Management](https://api.eumetsat.int/api-key/)
+3. Store them as `ROCAST_EUMETSAT_KEY` and `ROCAST_EUMETSAT_SECRET` if you use a local download script. Pass the values to EUMDAC as its consumer credentials. Once the native SEVIRI scans are on disk, point RoCast at that directory with `--seviri-dir`. [EUMETSAT Data Store guide](https://user.eumetsat.int/resources/user-guides/frequently-asked-questions-for-data-store)
+
+### NVIDIA NGC
+
+Sign in to NGC, open **Account Settings → API Keys**, and generate a personal key with access to the Earth-2 NIM service you plan to use. Export `NGC_API_KEY` for NVIDIA tooling. If you call the RoCast NIM client against an authenticated endpoint, also set `ROCAST_NGC_API_KEY` in your local `.env`. [Earth-2 NIM prerequisites](https://docs.nvidia.com/nim/earth-2/fourcastnet/latest/prerequisites.html)
+
+### Offline runs and cache paths
+
+After installation, the synthetic backtest runs offline with every key blank. It generates weather and telemetry locally. Polygon forecasts can also run offline with `--capacity-mw` and the bundled boundary. The archive chart can regenerate offline once its weather inputs are cached. Reproducing the ENTSO-E scorecard offline also requires its cached generation CSV. An uncached archive fetch or a live backtest needs a network connection.
+
+`ROCAST_DATA_DIR` and `ROCAST_ASSETS_DIR` in [`.env.example`](.env.example) are suggested paths for external download scripts. The current hero generator uses repository-relative `data/` and `assets/`. Keep real tokens in your local, ignored `.env`.
+
+## Usage
 
 ### National 48-hour backtest and export
 
