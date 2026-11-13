@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -66,7 +66,7 @@ class DynamicEntsoeCapacityManager:
             if ENTSO-E is unreachable.
         """
         if forecast_year is None:
-            forecast_year = datetime.now(timezone.utc).year
+            forecast_year = datetime.now(UTC).year
 
         try:
             df = self._query_entsoe(resource, forecast_year)

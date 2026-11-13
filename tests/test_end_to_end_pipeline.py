@@ -18,7 +18,9 @@ def test_synthetic_generators():
 
 
 def test_end_to_end_pipeline(tmp_path):
-    report = run_backtest("synthetic", epochs=1, output_dir=tmp_path, days=8, verbose=False)
+    report = run_backtest(
+        "synthetic", epochs=1, output_dir=tmp_path, days=8, n_test_windows=2, train_stride=12, verbose=False
+    )
     for m in report["targets"].values():
         assert m["pinball_loss_mw"] >= 0 and m["crps_mw"] >= 0
     csv = tmp_path / "predico_submission.csv"
@@ -31,4 +33,5 @@ def test_end_to_end_pipeline(tmp_path):
 
 
 def test_cli_entrypoint(tmp_path):
-    assert main(["backtest", "--mode", "synthetic", "--epochs", "1", "--days", "8", "--output-dir", str(tmp_path)]) == 0
+    args = ["backtest", "--mode", "synthetic", "--epochs", "1", "--days", "8", "--n-test-windows", "2"]
+    assert main([*args, "--train-stride", "12", "--output-dir", str(tmp_path)]) == 0

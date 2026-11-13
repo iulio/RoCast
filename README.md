@@ -1,51 +1,133 @@
-# RoCast 🇷🇴⚡
+# RoCast: Probabilistic Solar & Wind Forecasting for the Romanian Grid (SEN)
 
-![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/tests-pytest-brightgreen) ![zone](https://img.shields.io/badge/ENTSO--E-10YRO--TEL------P-orange)
+[![CI](https://github.com/iulio/Ro-cast/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/iulio/Ro-cast/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB)
+![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C)
+[![MIT license](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+![Romanian bidding zone](https://img.shields.io/badge/Zone-10YRO--TEL------P-orange)
+![Code style](https://img.shields.io/badge/Code%20style-Ruff-261230)
 
-Multi-scale **probabilistic Solar (PV) and Wind** forecasting for the Romanian National Power System (SEN), built for day-ahead / intraday balancing venues such as **Predico**, **EnergyBench** and **OPCOM**. 15-minute MTU, 6 h nowcast, 48 h day-ahead, quantiles P10–P90. No generative LLMs in the loop.
+RoCast forecasts solar and onshore wind for Romania’s bidding zone (`10YRO-TEL------P`) in 15-minute intervals. It combines SEVIRI cloud motion, NVIDIA Earth-2 ensembles, clear-sky solar physics, and PyTorch quantile regression for intraday balancing and day-ahead planning.
 
-![RoCast hero](assets/rocast_linkedin_hero.png)
+![RoCast 48h Rolling Hindcast and Spatial Domain](assets/rocast_linkedin_hero.png)
 
-## Romanian prosumer split
+*Left: ERA5 wind and cloud-cover contours, pySTEPS advection vectors, and the SE Wind Corridor polygon. Right: 48 hours of rolling two-hour hindcasts evaluated on held-out ENTSO-E generation using archived ERA5 weather.*
 
-| Source | ENTSO-E doc | What it captures |
-|---|---|---|
-| Utility solar, onshore wind | **A75** | metered generation (`solar_mw`, `wind_onshore_mw`) |
-| Total load | **A65** | includes ~4 GW behind-the-meter prosumer PV self-consumption |
+## Verified out-of-sample benchmark
 
-RoCast models both and derives `net_load_ex_renewables_mw = total_load_mw − solar_mw − wind_onshore_mw`.
+The Predico-style scorecard covers **192 quarter-hour samples** from **2025-06-20 08:00 UTC** to **2025-06-22 08:00 UTC**, end exclusive. Model fitting and calibration ended at 05:45 UTC on June 20, before the first forecast issue time. The chart uses a lightweight calibrated archive model and a single held-out window. The PVNet fusion backtest has a separate evaluation pipeline.
 
-## Three branches
+| Metric | Solar | Onshore wind | Benchmark or interpretation |
+| :--- | ---: | ---: | :--- |
+| **Skill** | **+45.4%** | **+31.4%** | Solar CRPS vs. day-ahead ERA5. Wind P50 MAE vs. two-hour ERA5 persistence. |
+| **P10–P90 coverage** | **84.1% daylight** / 89.6% all hours | **89.6%** | Observations within the nominal 80% interval |
+| P50 MAE | 76.5 MW | 254.6 MW | Mean absolute error of the median forecast |
+| Pinball loss | 31.0 MW | 80.4 MW | Mean across the five quantile losses |
+| CRPS | 61.6 MW | 167.6 MW | Continuous ranked probability score |
 
-1. **pySTEPS + pvlib** — Heliosat cloud index from EUMETSAT, Lucas-Kanade optical flow + semi-Lagrangian advection (24 steps = 6 h), multiplied by Ineichen clear-sky GHI at five hubs (Dobrogea, Focșani/Moldova, Wallachia, Oltenia, Transylvania). Automatic NumPy fallback if pySTEPS is unavailable.
-2. **NVIDIA Earth-2** — `earth2studio` FourCastNet 3 ensembles, NIM `/v1/infer` tar client, cropped to Romania; ensemble mean and spread maps. A deterministic synthetic ensemble powers offline runs.
-3. **`PVNetRomaniaFusion`** — PVNet-style 3D satellite encoder + Earth-2 spatial encoder + GRU telemetry + exogenous MLP, strictly monotone quantiles, capacity and night clamps, pinball loss. See [PLAN.md](PLAN.md) for tensor shapes and cutoff math.
+Skill is `100 × (1 − forecast error / baseline error)`. Solar uses the MAE of the plotted deterministic baseline as its baseline CRPS. That baseline uses prior-day ERA5 irradiance, scaled on calibration data.
 
-## Install
+## Why Romania is hard to forecast
 
-```bash
-uv venv && uv pip install -e ".[dev,nowcast]"     # or: python -m venv .venv && pip install -e ".[dev,nowcast]"
-# optional: pip install earth2studio satpy chronos-forecasting opencv-python-headless
-cp .env.example .env                               # ENTSO-E / NGC keys for live mode
+- **Distributed PV changes visible demand.** ANRE recorded 3.53 GW of installed prosumer capacity at the end of January 2026. When households and businesses consume their own solar output, the grid sees the effect through demand. RoCast ingests ENTSO-E A75 generation and A65 load and derives residual demand by subtracting reported solar and onshore wind from total load. [ANRE prosumer report](https://anre.ro/wp-content/uploads/2026/03/Situatie-prosumatori_ianuarie_2026.pdf)
+- **Coastal and terrain-driven wind ramps matter.** Transelectrica’s summer 2026 study lists 3.14 GW of licensed wind capacity. RoCast represents Dobrogea and the Focșani Gate / southern Moldova corridor as separate hubs to capture differences in Black Sea exposure and Carpathian terrain. [Transelectrica 2026 summer study](https://www.transelectrica.ro/documents/10179/92180/Memoriu%2Bstudiu%2Bvara%2B2026_public%2Bfinal.pdf/18854b51-0b5c-44b0-8a8f-28cf6eb85afa)
+- **Weather and market intervals differ.** A quarter-hour power forecast needs to represent cloud banks moving across Wallachia and wind ramps between coarse weather model outputs. The satellite branch estimates short-horizon cloud motion and the atmospheric branch provides longer-horizon context.
+
+## Multi-scale architecture
+
+```text
+0-6 h      Native EUMETSAT SEVIRI scans -> Heliosat cloud index
+            -> Lucas-Kanade optical flow -> semi-Lagrangian advection --+
+                                                                      |
+Physics    pvlib Ineichen clear-sky GHI -> elevation and night mask --+
+                                                                      |
+6-48 h     Earth2Studio FourCastNet 3 -> Romanian ensemble features ---+
+            Open-Meteo hub weather -> physical power baseline         |
+                                                                      v
+Telemetry  ENTSO-E A75 generation + A65 load -> GRU ----------> PVNetRomaniaFusion
+                                                                      |
+                                         P10 / P25 / P50 / P75 / P90 <-+
 ```
 
-## Usage
+The PyTorch model combines a 3D satellite encoder, a spatial Earth-2 encoder, recent telemetry and exogenous features. It enforces ordered quantiles and zero solar power at night. The optical-flow branch has a NumPy fallback. Offline runs use synthetic weather and telemetry. Live mode accepts local SEVIRI files and can run FourCastNet 3 through Earth2Studio with the optional backend installed. See [PLAN.md](PLAN.md) for tensor shapes and cutoff rules.
+
+## Polygon forecasting
+
+`RomaniaPolygonEngine` uses Shapely and a bundled geoBoundaries outline to clip longitude/latitude rings, GeoJSON, or WKT to Romania (`ROU`). A vectorized mask selects weather-grid cells inside the clipped area. If capacity is omitted, the model scales national installed capacity from ENTSO-E A68 by the intersected area and falls back to configured capacity if ENTSO-E is unavailable. The polygon CLI currently uses clear-sky solar physics and synthetic cloud and wind inputs.
+
+## Install and run
 
 ```bash
-python -m rocast.cli backtest --mode synthetic --epochs 3 --output-dir outputs
+git clone https://github.com/iulio/Ro-cast.git
+cd Ro-cast
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.ps1`. The offline examples require no credentials. For live ingestion, set `ROCAST_ENTSOE_API_KEY` in your environment or in a local `.env`. Install `.[nowcast]` for pySTEPS, `.[satellite]` for native SEVIRI ingestion, and `.[earth2]` for Earth2Studio. Supply local SEVIRI files with `--seviri-dir` and select FourCastNet 3 with `--earth2 earth2studio`.
+
+### National 48-hour backtest and export
+
+```bash
+python -m rocast.cli backtest --mode synthetic --epochs 1 --days 8 --n-test-windows 2 --train-stride 12 --output-dir outputs
+```
+
+The command writes `outputs/predico_submission.csv`, per-target submissions, and `outputs/backtest_metrics.json`. Submission rows contain a UTC timestamp and five quantiles. Select the primary submission with `--target solar_mw` or `--target wind_onshore_mw`. The CLI also supports `backtest --mode live` with ENTSO-E and Open-Meteo data.
+
+### Dobrogea wind polygon
+
+```bash
+python -m rocast.cli polygon-forecast --coords '[[27.1,43.9],[29.4,43.9],[29.4,46.1],[27.1,46.1],[27.1,43.9]]' --resource wind --hours 48 --capacity-mw 100 --output outputs/dobrogea_wind.csv
+```
+
+Here, 100 MW is an example portfolio capacity. Pass `--geojson` with a file path to use a saved polygon.
+
+### Python API
+
+```python
+from rocast.cli import run_backtest
+
+report = run_backtest(
+    mode="synthetic", epochs=1, days=8, n_test_windows=2,
+    train_stride=12, output_dir="outputs",
+)
+print(report["targets"]["solar_mw"]["mae_p50_mw"])
+```
+
+### Reproduce the chart
+
+```bash
 python scripts/generate_linkedin_hero.py
-pytest -v
 ```
 
-Outputs: `outputs/predico_submission.csv` (`datetime,q10,q25,q50,q75,q90`, ISO-8601 UTC; target chosen with `--target`), per-target `predico_submission_<target>.csv`, and `outputs/backtest_metrics.json`.
+The generator uses Open-Meteo ERA5 archives and ENTSO-E generation for June 15–22, 2025. It caches inputs under `data/`. A cached generation CSV or an ENTSO-E key reproduces the telemetry-backed scorecard. If neither is available, the generator uses an explicitly labeled ERA5-derived power benchmark.
 
-`--mode live` pulls ENTSO-E (A75/A65) and Open-Meteo for the last `--days` days; pass `--seviri-dir` (SEVIRI native files) and `--earth2 earth2studio` to activate the satellite and Earth-2 branches, otherwise they are disabled with a warning.
+## Repository layout
 
-## Benchmark (synthetic data, 3 epochs, 3 walk-forward test days)
+```text
+rocast/              Forecast models, physics, ingestion, geometry, and CLI
+scripts/             Hero chart generator and archive hindcast
+tests/               Unit and end-to-end tests
+assets/              Published hero image
+data/                Local archive inputs used by the chart generator
+.github/workflows/   GitHub Actions tests and distribution builds
+```
 
-| Target | Pinball (MW) | CRPS (MW) | MAE P50 (MW) | P10–P90 coverage | Skill vs NWP |
-|---|---|---|---|---|---|
-| Solar | 55.2 | 110.4 | 158.8 | 96.4 % | −75.9 % |
-| Wind onshore | 118.5 | 237.1 | 351.6 | 77.1 % | −9.7 % |
+## CI and distributions
 
-**Honest note:** these figures are on a *synthetic* world with a deliberately strong deterministic NWP baseline, a tiny training set (60 overlapping windows) and only 3 epochs, so the model is under-trained and does **not** yet beat the baseline (more epochs/data are expected to help, but this is untested here). The numbers validate the pipeline mechanics, not real-world Predico performance. Run `--mode live` with real data for genuine evaluation.
+Run `ruff check rocast tests scripts` and `python -m pytest -q` locally. GitHub Actions runs lint, tests, and the offline CLI smoke test on Python 3.11–3.13. After the matrix passes, it builds the wheel and source distribution, exercises the installed wheel from outside the checkout, and uploads both as the `rocast-distributions` artifact.
+
+## Roadmap
+
+- Blend DWD ICON-EU, GFS, and ECMWF IFS using fixed-lead verification.
+- Evaluate battery dispatch optimization with state-of-charge constraints and negative-price curtailment on the OPCOM day-ahead market.
+- Build a Predico competition submission adapter and add verification over multiple weather regimes.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
+
+## License and acknowledgments
+
+RoCast is released under the [MIT License](LICENSE) and maintained by [Iulian Amăricăi (`iulio`)](https://github.com/iulio) / Global Consult.
+
+The project builds on [OpenClimateFix PVNet](https://github.com/openclimatefix/pvnet), [pySTEPS](https://github.com/pySTEPS/pysteps), [pvlib](https://github.com/pvlib/pvlib-python), [NVIDIA Earth2Studio](https://github.com/NVIDIA/earth2studio), and [entsoe-py](https://github.com/EnergieID/entsoe-py). The archive chart uses Copernicus ERA5 via [Open-Meteo](https://open-meteo.com/en/docs/historical-weather-api), generation from [ENTSO-E Transparency](https://transparency.entsoe.eu/), and a [geoBoundaries](https://www.geoboundaries.org/) outline.

@@ -33,6 +33,7 @@ dependencies = [
     "requests",
     "httpx",
     "entsoe-py",
+    "shapely",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +48,9 @@ rocast = "rocast.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rocast*"]
+
+[tool.setuptools.package-data]
+"rocast.geometry" = ["romania_boundary.geojson"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

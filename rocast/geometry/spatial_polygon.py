@@ -11,8 +11,7 @@ from shapely.geometry import Polygon, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.wkt import loads as wkt_loads
 
-ROOT = Path(__file__).resolve().parents[2]
-ROMANIA_BOUNDARY_PATH = ROOT / "assets" / "geo" / "romania_boundary.geojson"
+ROMANIA_BOUNDARY_PATH = Path(__file__).with_name("romania_boundary.geojson")
 
 
 @dataclass(frozen=True)

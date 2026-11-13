@@ -2,4 +2,5 @@ include README.md
 include PLAN.md
 include LICENSE
 recursive-include assets *.png
-recursive-include assets *.geojson
+include scripts/generate_linkedin_hero.py
+include scripts/hero_archive.py

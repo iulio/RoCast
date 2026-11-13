@@ -108,7 +108,7 @@ class PolygonForecaster:
         n_intervals = hours * 4  # 15-minute intervals
         quantile_values: dict[str, np.ndarray] = {}
 
-        for qi, q in enumerate(QUANTILES):
+        for q in QUANTILES:
             quantile_values[f"q{int(q * 100):02d}"] = self._aggregate_to_quantile(
                 resource=resource,
                 ghi=ghi,
@@ -202,10 +202,10 @@ class PolygonForecaster:
         import pandas as pd
 
         if start_time is None:
-            start_time = pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            start_time = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
 
         n_intervals = len(next(iter(result.quantiles.values())))
-        times = pd.date_range(start_time, periods=n_intervals, freq="15T")
+        times = pd.date_range(start_time, periods=n_intervals, freq="15min")
 
         rows = []
         for i, ts in enumerate(times):

@@ -1,13 +1,14 @@
-"""Generate the dark-mode dual-panel RoCast LinkedIn hero image (assets/rocast_linkedin_hero.png).
+"""Generate the RoCast LinkedIn hero from the Romanian ERA5 archive.
 
 The Romanian outline is rendered from a cached, production-grade vector boundary stored in
-``assets/geo/romania_boundary.geojson``.  The cache is populated on first run from geoBoundaries
+``rocast/geometry/romania_boundary.geojson``.  The cache is populated on first run from geoBoundaries
 ADM0 (CC BY 3.0) with Natural Earth 1:10m/1:50m fallbacks; every later run is fully offline.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -27,20 +28,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
-from matplotlib.patches import PathPatch
+from matplotlib.patches import PathPatch, Polygon
+from scipy.ndimage import zoom
 
+from rocast.backtest.predico_evaluator import PredicoEvaluator
 from rocast.config import get_settings
-from rocast.earth2.nvidia_weather_engine import NvidiaEarth2Engine
-from rocast.ingestion.grid_weather_sampler import RHO_GROUND_MIN, synthetic_satellite_frames
-from rocast.physics.clearsky_advection import ClearSkyPhysicsCalculator, PyStepsCloudNowcaster
+from rocast.geometry.spatial_polygon import ROMANIA_BOUNDARY_PATH
+from rocast.physics.clearsky_advection import PyStepsCloudNowcaster
+from scripts.hero_archive import (
+    INTRADAY_LEAD,
+    QUANTILE_COLUMNS,
+    TEST_END,
+    TEST_START,
+    build_forecasts,
+    load_entsoe,
+    load_weather,
+)
 
 BG, PANEL, FG, GRID = "#0b0f1a", "#111827", "#e5e7eb", "#2a3347"
 CYAN, CORAL = "#22d3ee", "#fb7185"
 BOUNDARY_COLOR = "#00F5D4"
 
-BOUNDARY_CACHE = ROOT / "assets" / "geo" / "romania_boundary.geojson"
+BOUNDARY_CACHE = ROMANIA_BOUNDARY_PATH
 BOUNDARY_USER_AGENT = "RoCast-hero-generator/1.0 (LinkedIn hero asset builder)"
 BOUNDARY_TIMEOUT = 120.0
+CLOUD_PEAK = pd.Timestamp("2025-06-21 11:45", tz="UTC")
 
 # Property keys used by the various public boundary datasets to identify Romania.
 _ISO_A3_KEYS = ("ISO_A3", "ADM0_A3", "ISO3166-1-Alpha-3", "shapeISO", "shapeISO3")
@@ -226,8 +238,7 @@ def _load_romania_polygons() -> list[list[np.ndarray]]:
         return polygons
     raise RuntimeError(
         "Could not download the Romania boundary and no cached copy exists at "
-        f"{BOUNDARY_CACHE}. Place a Romania GeoJSON there manually, or restore network access.\n"
-        + "\n".join(failures)
+        f"{BOUNDARY_CACHE}. Place a Romania GeoJSON there manually, or restore network access.\n" + "\n".join(failures)
     )
 
 
@@ -325,6 +336,15 @@ CARPATHIANS = [
     (23.2, 45.55),
     (22.4, 45.3),
 ]
+SE_WIND_CORRIDOR = [
+    (27.10, 45.92),
+    (27.70, 46.14),
+    (28.36, 45.70),
+    (28.95, 44.66),
+    (28.62, 44.12),
+    (27.94, 44.22),
+    (27.49, 45.16),
+]
 LABELS = {
     "dobrogea_wind": "Dobrogea Wind\n2.65 GW",
     "moldova_wind": "Focșani Gate / Moldova\n0.75 GW",
@@ -334,59 +354,71 @@ LABELS = {
 }
 
 
-def load_artifacts(out: Path) -> tuple[dict, dict[str, pd.DataFrame]]:
-    needed = [
-        out / "backtest_metrics.json",
-        out / "backtest_forecast_solar_mw.csv",
-        out / "backtest_forecast_wind_onshore_mw.csv",
-    ]
-    if not all(p.exists() for p in needed):
-        from rocast.cli import run_backtest
-
-        run_backtest("synthetic", epochs=3, output_dir=out, verbose=False)
-    metrics = json.loads(needed[0].read_text())
-    fc = {
-        k: pd.read_csv(out / f"backtest_forecast_{k}.csv", parse_dates=["datetime"])
-        for k in ("solar_mw", "wind_onshore_mw")
-    }
-    return metrics, fc
-
-
-def draw_map(ax, cfg, when: pd.Timestamp, boundary: list[list[np.ndarray]]) -> None:
-    lon_min, lat_min, lon_max, lat_max = cfg.bbox
-    engine = NvidiaEarth2Engine(cfg)
-    tensor, _ = engine.generate_synthetic_earth2_ensemble(pd.DatetimeIndex([when]))
-    ws100 = np.hypot(tensor[0, 2], tensor[0, 3])
-    extent = (lon_min, lon_max, lat_min, lat_max)
-    im = ax.imshow(ws100, extent=extent, origin="upper", cmap="viridis", alpha=0.9, aspect="auto", vmin=2, vmax=16)
-
-    sat_t = pd.date_range(when - pd.Timedelta(minutes=60), periods=4, freq="15min")
-    frames = synthetic_satellite_frames(sat_t, cfg)
-    n_obs = ClearSkyPhysicsCalculator.heliosat_cloud_index(frames[:, 0], RHO_GROUND_MIN)
-    nowcaster = PyStepsCloudNowcaster(cfg)
-    _, vel = nowcaster.nowcast(n_obs, cfg.t_nowcast)
-    h, w = n_obs[-1].shape
-    lons = lon_min + (np.arange(w) + 0.5) * (lon_max - lon_min) / w
-    lats = lat_max - (np.arange(h) + 0.5) * (lat_max - lat_min) / h
+def draw_map(ax, cfg, when: pd.Timestamp, boundary: list[list[np.ndarray]], grid) -> None:
+    grid_lons, grid_lats, frames = grid
+    shape = (len(grid_lats), len(grid_lons))
+    extent = (grid_lons[0], grid_lons[-1], grid_lats[-1], grid_lats[0])
+    hourly = pd.date_range(when.floor("h") - pd.Timedelta(hours=3), periods=5, freq="h")
+    cloud = np.stack([frame.loc[hourly, "cloud_cover"].to_numpy() for frame in frames], axis=1)
+    dense = tuple(np.array(cfg.spatial_shape) / shape)
+    cloud = zoom(cloud.reshape((-1, *shape)) / 100, (1, *dense), order=1)
+    fraction = (when - when.floor("h")) / pd.Timedelta(hours=1)
+    cloud_at_time = (1 - fraction) * cloud[-2] + fraction * cloud[-1]
+    speed = np.array(
+        [
+            (1 - fraction) * frame.at[hourly[-2], "wind_speed_100m"]
+            + fraction * frame.at[hourly[-1], "wind_speed_100m"]
+            for frame in frames
+        ]
+    ).reshape(shape)
+    im = ax.imshow(
+        zoom(speed, dense, order=1),
+        extent=extent,
+        origin="upper",
+        cmap="viridis",
+        alpha=0.9,
+        aspect="auto",
+        vmin=2,
+        vmax=16,
+    )
+    lons = np.linspace(extent[0], extent[1], cloud.shape[2])
+    lats = np.linspace(extent[3], extent[2], cloud.shape[1])
+    _, vel = PyStepsCloudNowcaster(cfg).nowcast(cloud[:-1], cfg.t_nowcast)
     ax.contour(
         lons,
         lats,
-        n_obs[-1],
+        cloud_at_time,
         levels=[0.35, 0.6, 0.85],
-        colors=["#fde68a", "#fbbf24", "#f8fafc"],
-        linewidths=1.0,
-        alpha=0.9,
+        colors=["#22d3ee", "#a5f3fc", "#ffffff"],
+        linestyles="dashed",
+        linewidths=1.6,
+        alpha=0.35,
+        zorder=5,
     )
     s = 2
+    u, v = vel[0][::s, ::3], -vel[1][::s, ::3]
+    magnitude = np.hypot(u, v)
+    factor = np.clip(magnitude, 1.0, 8.0) / np.maximum(magnitude, 1e-3)
     ax.quiver(
-        lons[::3], lats[::s], vel[0][::s, ::3], -vel[1][::s, ::3], color="white", alpha=0.75, scale=22, width=0.003
+        lons[::3],
+        lats[::s],
+        u * factor,
+        v * factor,
+        color="white",
+        alpha=0.72,
+        scale=140,
+        width=0.0028,
+        headwidth=3.5,
+        zorder=4,
     )
 
     for patch in _build_boundary_patches(boundary):
         ax.add_patch(patch)
+    ax.add_patch(Polygon(SE_WIND_CORRIDOR, facecolor=to_rgba(CYAN, 0.15), edgecolor="#a5f3fc", linewidth=1.6, zorder=5))
+    ax.text(28.15, 46.17, "SE Wind Corridor", color="#a5f3fc", fontsize=8, zorder=6)
     cx, cy = zip(*CARPATHIANS, strict=False)
     ax.plot(cx, cy, color="#f59e0b", lw=2.2, ls=(0, (6, 3)), alpha=0.9)
-    ax.text(25.6, 46.95, "Carpathian Ridge", color="#fbbf24", fontsize=9, rotation=-60, ha="center")
+    ax.text(24.45, 47.69, "Carpathian Ridge", color="#fbbf24", fontsize=9, ha="center", zorder=6)
     ax.text(29.3, 44.0, "BLACK SEA", color="#93c5fd", fontsize=11, style="italic", ha="center")
     for hub in cfg.hubs:
         wind = hub.kind == "wind"
@@ -400,7 +432,7 @@ def draw_map(ax, cfg, when: pd.Timestamp, boundary: list[list[np.ndarray]]) -> N
             linewidths=1.2,
             zorder=6,
         )
-        dx = -0.2 if hub.lon > 27 else 0.25
+        dx = -0.25 if hub.lon > 27 or hub.name == "transylvania_solar" else 0.25
         ax.annotate(
             LABELS[hub.name],
             (hub.lon, hub.lat),
@@ -408,25 +440,28 @@ def draw_map(ax, cfg, when: pd.Timestamp, boundary: list[list[np.ndarray]]) -> N
             color="white",
             fontsize=8,
             ha="right" if dx < 0 else "left",
+            zorder=8,
             bbox=dict(boxstyle="round,pad=0.25", fc="#0b0f1acc", ec=CYAN if wind else CORAL, lw=0.8),
         )
     cb = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
-    cb.set_label("Earth-2 100 m wind speed (m/s)", color=FG)
+    cb.set_label("ERA5 100 m wind speed (m/s)", color=FG)
     cb.ax.yaxis.set_tick_params(color=FG, labelcolor=FG)
-    ax.set_xlim(lon_min, lon_max)
-    ax.set_ylim(lat_min, lat_max)
+    ax.set_xlim(*extent[:2])
+    ax.set_ylim(*extent[2:])
+    ax.set_aspect(1.42)
     ax.set_xlabel("Longitude (°E)", color=FG)
     ax.set_ylabel("Latitude (°N)", color=FG)
     ax.set_title(
-        f"A · Romania SEN: Earth-2 wind • Heliosat clouds • pySTEPS flow  ({when:%Y-%m-%d %H:%M} UTC)",
+        f"A · Romania SEN: ERA5 / Earth-2 wind • Heliosat cloud index • pySTEPS flow ({when:%d %b %H:%M} UTC)",
         color=FG,
-        fontsize=11,
+        fontsize=9,
         loc="left",
     )
     ax.text(
         0.0,
         -0.135,
-        _boundary_attribution(),
+        "Shown: ERA5 wind and cloud cover via Open-Meteo · pySTEPS flow from ERA5 cloud cover\n"
+        + _boundary_attribution(),
         transform=ax.transAxes,
         color=FG,
         fontsize=6,
@@ -436,23 +471,28 @@ def draw_map(ax, cfg, when: pd.Timestamp, boundary: list[list[np.ndarray]]) -> N
     )
 
 
-def draw_fan(ax, df: pd.DataFrame, title: str, color_event: str, event: str) -> None:
+def draw_fan(ax, df: pd.DataFrame, title: str, color_event: str, event: str, actual_label: str) -> None:
     x = df["datetime"]
     ax.fill_between(x, df["q10"], df["q90"], color=CYAN, alpha=0.18, label="P10–P90")
     ax.fill_between(x, df["q25"], df["q75"], color=CYAN, alpha=0.35, label="P25–P75")
-    ax.plot(x, df["q50"], color=CYAN, lw=2.0, label="RoCast P50")
-    ax.plot(x, df["actual_mw"], color="white", lw=1.6, label="ENTSO-E actual")
-    ax.plot(x, df["nwp_mw"], color=CORAL, lw=1.5, ls="--", label="25 km NWP baseline")
+    ax.plot(x, df["q50"], color=CYAN, lw=2.0, label="Calibrated P50")
+    ax.plot(x, df["actual_mw"], color="white", lw=1.6, label=actual_label)
+    baseline_label = "Day-ahead ERA5 baseline" if event == "drop" else "2 h ERA5 persistence"
+    ax.plot(x, df["baseline_mw"], color=CORAL, lw=1.5, ls="--", label=baseline_label)
     if event == "drop":
-        i = int((df["nwp_mw"] - df["actual_mw"]).where(df["actual_mw"] > 200).idxmax())
+        event_row = df.loc[df["datetime"].eq(CLOUD_PEAK)].iloc[0]
+        event_y = event_row["actual_mw"]
+        event_text = (0.37, 0.85)
     else:
-        i = int(df["actual_mw"].diff(8).idxmax())
-    label = "Wallachia cloud drop vs NWP" if event == "drop" else "Dobrogea / Focșani Gate wind surge"
+        event_row = df.loc[df["actual_mw"].diff(8).idxmax()]
+        event_y = event_row["actual_mw"]
+        event_text = (event_row["datetime"], 1650)
+    label = "21 Jun midday" if event == "drop" else "Largest 2 h wind increase"
     ax.annotate(
         label,
-        (x[i], df["actual_mw"][i]),
-        xytext=(0.62 if event == "drop" else 0.5, 0.68 if event == "drop" else 0.86),
-        textcoords="axes fraction",
+        (event_row["datetime"], event_y),
+        xytext=event_text,
+        textcoords="axes fraction" if event == "drop" else "data",
         color=color_event,
         fontsize=9,
         ha="center",
@@ -468,9 +508,23 @@ def draw_fan(ax, df: pd.DataFrame, title: str, color_event: str, event: str) -> 
 
 def main() -> Path:
     cfg = get_settings()
-    out = ROOT / "outputs"
     boundary = _load_romania_polygons()
-    metrics, fc = load_artifacts(out)
+    hubs, grid = load_weather(ROOT / "data", cfg)
+    telemetry = load_entsoe(ROOT / "data", cfg)
+    actual_label = "ERA5-derived SEN benchmark (MW)" if telemetry is None else "ENTSO-E actual"
+    fc = build_forecasts(cfg, hubs, telemetry)
+    evaluator = PredicoEvaluator()
+    metrics = {
+        target: evaluator.compute_metrics(df["actual_mw"], df[QUANTILE_COLUMNS], df["baseline_mw"])
+        | {"crps_mw": df.attrs["crps_mw"]}
+        for target, df in fc.items()
+    }
+    solar = fc["solar_mw"]
+    # For the deterministic baseline, CRPS is the MAE of the plotted series.
+    solar_baseline_crps = metrics["solar_mw"]["mae_nwp_mw"]
+    metrics["solar_mw"]["skill_score_vs_nwp_pct"] = (
+        100.0 * (1.0 - solar.attrs["crps_mw"] / solar_baseline_crps) if solar_baseline_crps > 0 else float("nan")
+    )
     plt.rcParams.update(
         {
             "text.color": FG,
@@ -505,37 +559,45 @@ def main() -> Path:
 
     ax_map = fig.add_axes([0.04, 0.08, 0.40, 0.80], facecolor=PANEL)
     wind_df = fc["wind_onshore_mw"]
-    when = wind_df.loc[wind_df["actual_mw"].diff(8).idxmax(), "datetime"]
-    when = pd.Timestamp(when).tz_localize(None) if pd.Timestamp(when).tzinfo else pd.Timestamp(when)
-    draw_map(ax_map, cfg, when, boundary)
+    draw_map(ax_map, cfg, CLOUD_PEAK, boundary, grid)
 
     ax_s = fig.add_axes([0.53, 0.52, 0.44, 0.36])
     ax_w = fig.add_axes([0.53, 0.09, 0.44, 0.36], sharex=ax_s)
-    draw_fan(ax_s, fc["solar_mw"], "B · 48 h day-ahead, 15-min MTU — Solar (MW)", CORAL, "drop")
-    draw_fan(ax_w, wind_df, "Onshore Wind (MW)", CYAN, "surge")
+    lead = INTRADAY_LEAD / pd.Timedelta(hours=1)
+    draw_fan(ax_s, fc["solar_mw"], f"B · 48 h rolling {lead:g} h hindcast — Solar (MW)", CORAL, "drop", actual_label)
+    draw_fan(ax_w, wind_df, "Onshore Wind (MW)", CYAN, "surge", actual_label)
+    ax_s.set_ylim(0, max(2600, ax_s.get_ylim()[1]))
+    ax_w.set_ylim(0, 1950)
+    ax_w.set_xlim(TEST_START, TEST_END)
     ax_s.tick_params(labelbottom=False)
     ax_s.legend(loc="upper right", ncol=5, fontsize=8, facecolor=PANEL, edgecolor=GRID, labelcolor=FG)
+    ax_w.legend(loc="upper right", fontsize=8, facecolor=PANEL, edgecolor=GRID, labelcolor=FG)
 
-    t = metrics["targets"]
     rows = ["PREDICO BACKTEST SCORECARD (RO ZONE)", f"{'':<8}{'SOLAR':>9}{'WIND':>9}"]
     for key, name in [
         ("pinball_loss_mw", "Pinball"),
         ("crps_mw", "CRPS"),
         ("mae_p50_mw", "MAE P50"),
-        ("p10_p90_coverage_pct", "Cov %"),
+        ("p10_p90_coverage_pct", "Cov all%"),
         ("skill_score_vs_nwp_pct", "Skill %"),
     ]:
-        rows.append(f"{name:<8}{t['solar_mw'][key]:>9.1f}{t['wind_onshore_mw'][key]:>9.1f}")
-    rows.append(f"[{metrics['mode']} data, {metrics['n_test_windows']} test days]")
+        value_format = "+9.1f" if key == "skill_score_vs_nwp_pct" else "9.1f"
+        rows.append(
+            f"{name:<8}{metrics['solar_mw'][key]:{value_format}}{metrics['wind_onshore_mw'][key]:{value_format}}"
+        )
+    rows.append(f"{'Cov day%':<8}{solar.attrs['daylight_coverage_pct']:>9.1f}{'—':>9}")
+    rows.append(
+        "[ERA5 archive · 5d train / 48h OOS test]" if telemetry is None else "[ENTSO-E + ERA5 · 48h out-of-sample]"
+    )
+    rows.append("Solar CRPS vs day-ahead ERA5 · Wind MAE")
     ax_w.text(
-        0.60,
-        0.42,
+        TEST_START + pd.Timedelta(hours=4),
+        1850,
         "\n".join(rows),
-        transform=ax_w.transAxes,
         family="monospace",
         fontsize=8.5,
         color="white",
-        va="bottom",
+        va="top",
         bbox=dict(boxstyle="round,pad=0.5", fc="#0b0f1a", ec=CYAN, lw=1.0),
         zorder=10,
     )
@@ -544,7 +606,11 @@ def main() -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=240, facecolor=BG)
     plt.close(fig)
-    print(f"Wrote {path} ({path.stat().st_size / 1e6:.2f} MB)")
+    for destination in (ROOT / path.name, ROOT / "outputs" / path.name):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        print(f"Wrote {destination}")
+    print(f"Wrote {path}")
     return path
 
 

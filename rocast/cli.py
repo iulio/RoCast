@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -21,16 +22,16 @@ from rocast import __version__
 from rocast.backtest.predico_evaluator import PredicoEvaluator
 from rocast.config import RoCastSettings, get_settings
 from rocast.earth2.nvidia_weather_engine import NvidiaEarth2Engine, feature_columns
+from rocast.geometry.spatial_polygon import RomaniaPolygonEngine
+from rocast.ingestion.entsoe_capacity import DynamicEntsoeCapacityManager
 from rocast.ingestion.grid_weather_sampler import (
     RHO_GROUND_MIN,
     RomanianGridWeatherSampler,
     synthetic_satellite_frames,
     wind_power_curve,
 )
-from rocast.models.pvnet_romania import CalibratedPinballLoss, PVNetRomaniaFusion
-from rocast.geometry.spatial_polygon import RomaniaPolygonEngine, create_spatial_mask
-from rocast.ingestion.entsoe_capacity import DynamicEntsoeCapacityManager
 from rocast.models.polygon_forecaster import PolygonForecaster
+from rocast.models.pvnet_romania import CalibratedPinballLoss, PVNetRomaniaFusion
 from rocast.physics.clearsky_advection import ClearSkyPhysicsCalculator, PyStepsCloudNowcaster
 
 TARGETS = {"solar_mw": "nwp_solar_mw", "wind_onshore_mw": "nwp_wind_onshore_mw"}
@@ -475,8 +476,8 @@ def _run_polygon_forecast(args) -> None:
     lats = lat_max - (np.arange(h) + 0.5) * (lat_max - lat_min) / h
 
     n_intervals = args.hours * 4
-    now = pd.Timestamp.utcnow().floor("h")
-    times = pd.date_range(now, periods=n_intervals, freq="15T")
+    now = pd.Timestamp.now(tz="UTC").floor("h")
+    times = pd.date_range(now, periods=n_intervals, freq="15min")
 
     # --- generate weather tensors ---
     # Clear-sky GHI (W/m^2) from first hub, tiled across grid
@@ -518,7 +519,7 @@ def _run_polygon_forecast(args) -> None:
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     csv_text = forecaster.to_csv(result)
-    out_path.write_text(csv_text, encoding="utf-8")
+    out_path.write_text(csv_text, encoding="utf-8", newline="")
 
     print(
         f"Polygon forecast written to {out_path} | "
